@@ -1,7 +1,10 @@
 // ============================================================
 // WANNER MEALS — MEAL PLAN TEXT PARSER
 //
-// VERSION 1: Basic structural detection only.
+// VERSION 1.1: Fixed grocery header detection so "Monday Shop"
+//              and "Thursday Shop" aren't misread as day headers.
+//              Also skips subcategory headers like "Produce:".
+//
 // This parser is intentionally simple and defensive.
 // It will NOT crash on imperfect input.
 //
@@ -23,7 +26,7 @@ const DAY_NAMES = [
 
 // Section headers that signal an ingredients block
 const INGREDIENT_HEADERS = [
-  'ingredients', 'ingredient list', 'you\'ll need', 'you will need', 'what you need',
+  'ingredients', 'ingredient list', "you'll need", 'you will need', 'what you need',
 ];
 
 // Section headers that signal an instructions block
@@ -31,42 +34,31 @@ const INSTRUCTION_HEADERS = [
   'instructions', 'steps', 'directions', 'method', 'how to make', 'preparation',
 ];
 
-// Headers that signal a grocery list block
+// Headers that signal the Monday grocery list block
 const GROCERY_MONDAY_HEADERS = [
   'monday shop', 'monday grocery', 'monday list', 'monday shopping',
   'shop monday', 'monday groceries',
 ];
 
+// Headers that signal the Thursday grocery list block
 const GROCERY_THURSDAY_HEADERS = [
   'thursday shop', 'thursday grocery', 'thursday list', 'thursday shopping',
   'shop thursday', 'thursday groceries',
 ];
 
-/**
- * Normalise a line of text for comparison: lowercase + trim
- */
+/** Lowercase + trim a line for comparison. */
 function norm(line: string): string {
   return line.toLowerCase().trim();
 }
 
-/**
- * Check if a normalised line matches any of the given patterns
- */
+/** True if `line` contains any of the given substrings. */
 function matchesAny(line: string, patterns: string[]): boolean {
   return patterns.some(p => line.includes(p));
 }
 
 /**
- * Parse a raw pasted meal plan text into structured data.
- *
- * Returns:
- *   - rawText: the original input, untouched
- *   - detectedDays: array of day names found
- *   - detectedRecipes: array of recipe objects (may be partially filled)
- *   - detectedGroceryLists: { monday: string[], thursday: string[] }
- *   - warnings: any issues detected during parsing
- *
- * All output arrays may be empty — the function never throws.
+ * Parse a raw pasted meal plan into structured data.
+ * Never throws. All output arrays may be empty.
  */
 export function parseMealPlanText(rawText: string): ParsedMealPlan {
   const warnings: string[] = [];
@@ -88,9 +80,6 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
   const mondayGroceries: string[] = [];
   const thursdayGroceries: string[] = [];
 
-  // ──────────────────────────────────────────────────────────
-  // STATE MACHINE — we track what "section" we're currently in
-  // ──────────────────────────────────────────────────────────
   type ParseMode =
     | 'scanning'
     | 'in-day'
@@ -114,12 +103,26 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
     const raw = lines[i];
     const line = norm(raw);
 
-    // Skip empty lines between sections
     if (line.length === 0) continue;
+
+    // ── FIX v1.1: Grocery headers checked BEFORE day headers ──
+    // Without this, "Monday Shop" matches the day "Monday"
+    // because the loose day-check accepts any line that starts
+    // with "monday ". Same for "Thursday Shop".
+    if (matchesAny(line, GROCERY_MONDAY_HEADERS)) {
+      finaliseRecipe();
+      mode = 'in-monday-grocery';
+      continue;
+    }
+
+    if (matchesAny(line, GROCERY_THURSDAY_HEADERS)) {
+      finaliseRecipe();
+      mode = 'in-thursday-grocery';
+      continue;
+    }
 
     // ── Detect a day heading ────────────────────────────────
     const matchedDay = DAY_NAMES.find(d => {
-      // Looks for "Monday", "## Monday", "**Monday**", "Monday:", etc.
       const stripped = line.replace(/[#*_:\-–—]/g, '').trim();
       return stripped === d || stripped.startsWith(d + ' ') || stripped.endsWith(' ' + d);
     });
@@ -152,25 +155,10 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
       continue;
     }
 
-    // ── Detect Monday grocery header ────────────────────────
-    if (matchesAny(line, GROCERY_MONDAY_HEADERS)) {
-      finaliseRecipe();
-      mode = 'in-monday-grocery';
-      continue;
-    }
-
-    // ── Detect Thursday grocery header ──────────────────────
-    if (matchesAny(line, GROCERY_THURSDAY_HEADERS)) {
-      finaliseRecipe();
-      mode = 'in-thursday-grocery';
-      continue;
-    }
-
     // ── Handle content based on current mode ────────────────
 
     if (mode === 'in-day' && currentRecipe) {
-      // The line right after a day heading is likely the meal name
-      // TODO: FUTURE — use NLP to distinguish meal name vs notes vs description
+      // The first non-empty line after a day heading is the meal name
       if (!currentRecipe.mealName && raw.trim().length > 0) {
         currentRecipe.mealName = raw.trim().replace(/^[-•*]\s*/, '');
       }
@@ -178,7 +166,6 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
     }
 
     if (mode === 'in-ingredients' && currentRecipe) {
-      // Ingredient lines usually start with "- ", "• ", "* ", or a number
       const cleaned = raw.trim().replace(/^[-•*\d+\.]\s*/, '').trim();
       if (cleaned.length > 0) {
         currentRecipe.ingredients.push(cleaned);
@@ -187,8 +174,11 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
     }
 
     if (mode === 'in-steps' && currentRecipe) {
-      // Step lines usually start with "1.", "2.", or "-"
-      const cleaned = raw.trim().replace(/^\d+[\.\)]\s*/, '').replace(/^[-•*]\s*/, '').trim();
+      const cleaned = raw
+        .trim()
+        .replace(/^\d+[\.\)]\s*/, '')
+        .replace(/^[-•*]\s*/, '')
+        .trim();
       if (cleaned.length > 0) {
         currentRecipe.steps.push(cleaned);
       }
@@ -196,7 +186,10 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
     }
 
     if (mode === 'in-monday-grocery') {
-      const cleaned = raw.trim().replace(/^[-•*]\s*/, '').trim();
+      const trimmed = raw.trim();
+      // FIX v1.1: skip subcategory headers like "Produce:" or "Protein & Meat:"
+      if (/:\s*$/.test(trimmed) && !/^[-•*]/.test(trimmed)) continue;
+      const cleaned = trimmed.replace(/^[-•*]\s*/, '').trim();
       if (cleaned.length > 0) {
         mondayGroceries.push(cleaned);
       }
@@ -204,7 +197,10 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
     }
 
     if (mode === 'in-thursday-grocery') {
-      const cleaned = raw.trim().replace(/^[-•*]\s*/, '').trim();
+      const trimmed = raw.trim();
+      // FIX v1.1: skip subcategory headers like "Produce:" or "Protein & Meat:"
+      if (/:\s*$/.test(trimmed) && !/^[-•*]/.test(trimmed)) continue;
+      const cleaned = trimmed.replace(/^[-•*]\s*/, '').trim();
       if (cleaned.length > 0) {
         thursdayGroceries.push(cleaned);
       }
@@ -227,10 +223,6 @@ export function parseMealPlanText(rawText: string): ParsedMealPlan {
   if (mondayGroceries.length === 0 && thursdayGroceries.length === 0) {
     warnings.push('No grocery lists were detected. Look for "Monday Shop" or "Thursday Shop" headings.');
   }
-
-  // TODO: FUTURE — validate detected recipes against known format
-  // TODO: FUTURE — cross-reference detected days with detected recipes
-  // TODO: FUTURE — use AI to fill gaps in partially-detected recipes
 
   return {
     rawText,
