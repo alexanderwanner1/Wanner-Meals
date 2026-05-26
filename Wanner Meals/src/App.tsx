@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { Section, ImportedWeek } from './types';
 import Header from './components/layout/Header';
 import BottomNav from './components/layout/BottomNav';
@@ -9,100 +9,98 @@ import GroceryList from './pages/GroceryList';
 import Cooking from './pages/Cooking';
 import ImportPlan from './pages/ImportPlan';
 import DayRecipePage from './components/cooking/DayRecipePage';
-import { week1Meals, week1Recipes } from './data/week1Meals';
 import { loadFromStorage, saveToStorage, IMPORTED_WEEKS_KEY } from './utils/storage';
+import { resolveActivePlan } from './utils/activePlan';
+
+const ACTIVE_WEEK_KEY = 'wanner-meals-active-week';
 
 export default function App() {
-  // ── Navigation ──────────────────────────────────────────
   const [activeSection, setActiveSection] = useState<Section>('home');
 
-  // ── Week selector (Home page) ────────────────────────────
-  const [activeWeek, setActiveWeek] = useState<number>(1);
+  // Active week persisted so it sticks across reloads
+  const [activeWeek, setActiveWeekRaw] = useState<number>(
+    () => loadFromStorage<number>(ACTIVE_WEEK_KEY, 1)
+  );
+  const setActiveWeek = (id: number) => {
+    setActiveWeekRaw(id);
+    saveToStorage(ACTIVE_WEEK_KEY, id);
+  };
 
-  // ── Cooking section active day tab ───────────────────────
   const [activeCookingDay, setActiveCookingDay] = useState<string>('Monday');
 
-  // ── "Cook this" modal (triggered from Meal Plan cards) ───
   const [cookingModal, setCookingModal] = useState<{ open: boolean; day: string }>({
     open: false,
     day: '',
   });
 
-  // ── Imported weeks ───────────────────────────────────────
   const [importedWeeks, setImportedWeeks] = useState<ImportedWeek[]>(
     () => loadFromStorage<ImportedWeek[]>(IMPORTED_WEEKS_KEY, [])
   );
 
-  // Persist imported weeks whenever they change
   useEffect(() => {
     saveToStorage(IMPORTED_WEEKS_KEY, importedWeeks);
   }, [importedWeeks]);
 
-  // ── Handlers ─────────────────────────────────────────────
+  // Compute the active plan from the selection + imports
+  const activePlan = useMemo(
+    () => resolveActivePlan(activeWeek, importedWeeks),
+    [activeWeek, importedWeeks],
+  );
 
-  // "Cook this" button on a Meal Plan card → opens modal (C10)
-  const handleCookThis = (day: string) => {
-    setCookingModal({ open: true, day });
-  };
-
-  // Tapping a meal on the calendar → switch to Cooking section (B8)
+  // Handlers
+  const handleCookThis = (day: string) => setCookingModal({ open: true, day });
   const handleCalendarMealTap = (day: string) => {
     setActiveCookingDay(day);
     setActiveSection('cooking');
   };
-
-  // Save imported week from ImportPlan page (F19)
   const handleImportSave = (week: ImportedWeek) => {
     setImportedWeeks(prev => {
-      // Replace if same id already exists, otherwise append
       const exists = prev.find(w => w.id === week.id);
       if (exists) return prev.map(w => w.id === week.id ? week : w);
       return [...prev, week];
     });
   };
-
-  // Delete a saved import
   const handleImportDelete = (id: string) => {
     setImportedWeeks(prev => prev.filter(w => w.id !== id));
+    // If the deleted plan was active, fall back to Week 1
+    if (Number(id) === activeWeek) setActiveWeek(1);
   };
 
-  // Resolve the modal's recipe and meal
   const modalRecipe = cookingModal.day
-    ? week1Recipes.find(r => r.day === cookingModal.day)
+    ? activePlan.recipes.find(r => r.day === cookingModal.day)
     : undefined;
   const modalMeal = cookingModal.day
-    ? week1Meals.find(m => m.day === cookingModal.day)
+    ? activePlan.meals.find(m => m.day === cookingModal.day)
     : undefined;
 
   return (
     <div className="min-h-screen bg-stone-50 font-sans">
-      {/* ── Header (always visible) ── */}
       <Header />
-
-      {/* ── Desktop top nav sits below header (rendered inside BottomNav) ── */}
       <BottomNav activeSection={activeSection} setActiveSection={setActiveSection} />
 
-      {/* ── Main page content ── */}
       <main className="pb-24 md:pb-8">
         {activeSection === 'home' && (
           <Home
             activeWeek={activeWeek}
             setActiveWeek={setActiveWeek}
             importedWeeks={importedWeeks}
+            activePlan={activePlan}
             onMealTap={handleCalendarMealTap}
           />
         )}
 
         {activeSection === 'meal-plan' && (
-          <MealPlan onCookThis={handleCookThis} />
+          <MealPlan activePlan={activePlan} onCookThis={handleCookThis} />
         )}
 
         {activeSection === 'grocery' && (
-          <GroceryList />
+          // key= forces remount when active plan changes so checkbox state reloads
+          <GroceryList key={activePlan.storageKey} activePlan={activePlan} />
         )}
 
         {activeSection === 'cooking' && (
           <Cooking
+            activePlan={activePlan}
             activeDay={activeCookingDay}
             setActiveDay={setActiveCookingDay}
           />
@@ -117,7 +115,6 @@ export default function App() {
         )}
       </main>
 
-      {/* ── "Cook this" modal (C10) ── */}
       <Modal
         open={cookingModal.open}
         onClose={() => setCookingModal({ open: false, day: '' })}
