@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { week1MondayTrip, week1ThursdayTrip } from '../data/week1Groceries';
+import type { ActivePlan } from '../types';
 import GroceryCategory from '../components/grocery/GroceryCategory';
-import { loadFromStorage, saveToStorage, GROCERY_KEY } from '../utils/storage';
+import { loadFromStorage, saveToStorage } from '../utils/storage';
 
-const MONDAY_KEY  = GROCERY_KEY(1, 'monday-shop');
-const THURSDAY_KEY = GROCERY_KEY(1, 'thursday-shop');
+interface GroceryListProps {
+  activePlan: ActivePlan;
+}
 
-const TRIPS = [week1MondayTrip, week1ThursdayTrip];
+export default function GroceryList({ activePlan }: GroceryListProps) {
+  const MONDAY_KEY = `wanner-meals-${activePlan.storageKey}-monday-shop`;
+  const THURSDAY_KEY = `wanner-meals-${activePlan.storageKey}-thursday-shop`;
 
-export default function GroceryList() {
+  const TRIPS = [activePlan.mondayShop, activePlan.thursdayShop];
+
   const [activeTrip, setActiveTrip] = useState<'monday-shop' | 'thursday-shop'>('monday-shop');
 
-  // Load checked IDs from localStorage on mount (D15: stay checked until Reset)
   const [checkedMon, setCheckedMon] = useState<Set<string>>(
     () => new Set<string>(loadFromStorage<string[]>(MONDAY_KEY, []))
   );
@@ -19,21 +22,14 @@ export default function GroceryList() {
     () => new Set<string>(loadFromStorage<string[]>(THURSDAY_KEY, []))
   );
 
-  // Persist to localStorage whenever checked state changes
-  useEffect(() => {
-    saveToStorage(MONDAY_KEY, [...checkedMon]);
-  }, [checkedMon]);
-
-  useEffect(() => {
-    saveToStorage(THURSDAY_KEY, [...checkedThu]);
-  }, [checkedThu]);
+  useEffect(() => { saveToStorage(MONDAY_KEY, [...checkedMon]); }, [checkedMon, MONDAY_KEY]);
+  useEffect(() => { saveToStorage(THURSDAY_KEY, [...checkedThu]); }, [checkedThu, THURSDAY_KEY]);
 
   const currentChecked = activeTrip === 'monday-shop' ? checkedMon : checkedThu;
   const setCurrentChecked = activeTrip === 'monday-shop' ? setCheckedMon : setCheckedThu;
 
   const currentTrip = TRIPS.find(t => t.key === activeTrip)!;
 
-  // Calculate total items (exclude empty categories)
   const allItems = currentTrip.categories.flatMap(c => c.items);
   const totalItems = allItems.length;
   const checkedCount = allItems.filter(i => currentChecked.has(i.id)).length;
@@ -42,30 +38,24 @@ export default function GroceryList() {
   const handleToggle = (id: string) => {
     setCurrentChecked(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
 
-  const handleReset = () => {
-    setCurrentChecked(new Set());
-  };
+  const handleReset = () => setCurrentChecked(new Set());
 
   return (
     <div className="max-w-3xl mx-auto pt-4 pb-6 md:pt-6">
 
-      {/* ── Trip tabs (Monday / Thursday) ── */}
-      <div className="px-4 mb-4">
+      <div className="px-4 mb-3">
         <div className="flex gap-2">
           {TRIPS.map(trip => (
             <button
               key={trip.key}
               onClick={() => setActiveTrip(trip.key as 'monday-shop' | 'thursday-shop')}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+              className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                 activeTrip === trip.key
                   ? 'bg-green-600 text-white shadow-sm'
                   : 'bg-white text-gray-600 border border-gray-200'
@@ -75,22 +65,20 @@ export default function GroceryList() {
             </button>
           ))}
         </div>
-
-        {/* Trip description */}
-        <p className="text-xs text-gray-400 mt-2 px-0.5">{currentTrip.description}</p>
       </div>
 
-      {/* ── Progress bar + Reset ── */}
       <div className="px-4 mb-4">
-        <div className="bg-white rounded-2xl shadow-sm px-4 py-3">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-semibold text-gray-700">
-              {checkedCount} of {totalItems} items
-            </span>
+        <div className="bg-white rounded-2xl p-4 shadow-sm">
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <p className="text-sm font-semibold text-gray-900">{currentTrip.label}</p>
+              <p className="text-xs text-gray-400">{currentTrip.description}</p>
+            </div>
             <div className="flex items-center gap-3">
-              {checkedCount === totalItems && totalItems > 0 && (
-                <span className="text-xs text-green-600 font-semibold">All done! 🎉</span>
-              )}
+              <span className="text-xs font-semibold text-gray-500">
+                {checkedCount}/{totalItems}
+              </span>
+              {checkedCount === totalItems && totalItems > 0 && <span>🎉</span>}
               <button
                 onClick={handleReset}
                 disabled={checkedCount === 0}
@@ -100,7 +88,6 @@ export default function GroceryList() {
               </button>
             </div>
           </div>
-          {/* Progress bar */}
           <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
             <div
               className="h-full bg-green-500 rounded-full transition-all duration-300"
@@ -110,7 +97,6 @@ export default function GroceryList() {
         </div>
       </div>
 
-      {/* ── Category list ── */}
       <div className="px-4">
         {currentTrip.categories.map(category => (
           <GroceryCategory
